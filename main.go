@@ -1,32 +1,27 @@
-package recs
+package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
+	"net/http"
+	"encoding/json"
+	"bytes"
 
-	"github.com/hashicorp/raft"
 	"github.com/SvenDH/recs/store"
-	"github.com/SvenDH/recs/httpd"
+	"github.com/SvenDH/recs/modules"
 )
-
 
 var (
-	inmem = *flag.Bool("inmem", false, "Use in-memory storage for Raft")
-	raftAddr = *flag.String("address", "localhost:50051", "TCP host+port for this node")
-	httpAddr = *flag.String("http", "localhost:8080", "HTTP host+port for this node")
-	joinAddr = *flag.String("join", "", "Host+port of leader to join")
-	nodeID = *flag.String("raft_id", "", "Node id used by Raft")
-
-	raftDir = *flag.String("raft_data_dir", "data/", "Raft data dir")
-	raftBootstrap = *flag.Bool("raft_bootstrap", false, "Whether to bootstrap the Raft cluster")
+	inmem = flag.Bool("inmem", false, "Use in-memory storage for Raft")
+	wal = flag.Bool("wal", true, "Use on-disk write-ahead log for Raft")
+	raftAddr = flag.String("raddr", "127.0.0.1:12000", "TCP host+port for the raft chatter for this node")
+	httpAddr = flag.String("haddr", "127.0.0.1:8080", "HTTP host+port for this node")
+	joinAddr = flag.String("join", "", "Host+port of leader to join")
+	nodeID = flag.String("id", "", "Node id used by Raft")
 )
-
-
 
 func main() {
 	flag.Parse()
@@ -34,12 +29,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "No Raft storage directory specified\n")
 		os.Exit(1)
 	}
-
-	if nodeID == "" {
+	if *nodeID == "" {
 		nodeID = raftAddr
 	}
-
-	// Ensure Raft storage exists.
 	raftDir := flag.Arg(0)
 	if raftDir == "" {
 		log.Fatalln("No Raft storage directory specified")
@@ -47,28 +39,30 @@ func main() {
 	if err := os.MkdirAll(raftDir, 0700); err != nil {
 		log.Fatalf("failed to create path for Raft storage: %s", err.Error())
 	}
+	
+	s := store.NewStore(*inmem, *wal)
+	modules.RegisterBase(s)
+	modules.RegisterChat(s)
 
-	s := store.New(inmem)
-	s.RaftDir = raftDir
-	s.RaftBind = raftAddr
-	if err := s.Open(joinAddr == "", nodeID); err != nil {
+
+	s.Dir = raftDir
+	s.Bind = *raftAddr
+	if err := s.Open(*joinAddr == "", *nodeID); err != nil {
 		log.Fatalf("failed to open store: %s", err.Error())
 	}
 
-	h := httpd.New(httpAddr, s)
+	h := NewService(*httpAddr, s)
 	if err := h.Start(); err != nil {
 		log.Fatalf("failed to start HTTP service: %s", err.Error())
 	}
 
-	// If join was specified, make the join request.
-	if joinAddr != "" {
-		if err := join(joinAddr, raftAddr, nodeID); err != nil {
-			log.Fatalf("failed to join node at %s: %s", joinAddr, err.Error())
+	if *joinAddr != "" {
+		if err := join(*joinAddr, *raftAddr, *nodeID); err != nil {
+			log.Fatalf("failed to join node at %s: %s", *joinAddr, err.Error())
 		}
 	}
 
-	// We're up and running!
-	log.Printf("hraftd started successfully, listening on http://%s", httpAddr)
+	log.Printf("hraftd started successfully, listening on http://%s", *httpAddr)
 
 	terminate := make(chan os.Signal, 1)
 	signal.Notify(terminate, os.Interrupt)
@@ -76,49 +70,15 @@ func main() {
 	log.Println("hraftd exiting")
 }
 
-func NewRaft(ctx context.Context, myID, myAddress string, fsm raft.FSM) (*raft.Raft, *transport.Manager, error) {
-	c := raft.DefaultConfig()
-	c.LocalID = raft.ServerID(myID)
-
-	baseDir := filepath.Join(*raftDir, myID)
-
-	ldb, err := boltdb.NewBoltStore(filepath.Join(baseDir, "logs.dat"))
+func join(joinAddr, raftAddr, nodeID string) error {
+	b, err := json.Marshal(map[string]string{"addr": raftAddr, "id": nodeID})
 	if err != nil {
-		return nil, nil, fmt.Errorf(`boltdb.NewBoltStore(%q): %v`, filepath.Join(baseDir, "logs.dat"), err)
+		return err
 	}
-
-	sdb, err := boltdb.NewBoltStore(filepath.Join(baseDir, "stable.dat"))
+	resp, err := http.Post(fmt.Sprintf("http://%s/join", joinAddr), "application-type/json", bytes.NewReader(b))
 	if err != nil {
-		return nil, nil, fmt.Errorf(`boltdb.NewBoltStore(%q): %v`, filepath.Join(baseDir, "stable.dat"), err)
+		return err
 	}
-
-	fss, err := raft.NewFileSnapshotStore(baseDir, 3, os.Stderr)
-	if err != nil {
-		return nil, nil, fmt.Errorf(`raft.NewFileSnapshotStore(%q, ...): %v`, baseDir, err)
-	}
-
-	tm := transport.New(raft.ServerAddress(myAddress), []grpc.DialOption{grpc.WithInsecure()})
-
-	r, err := raft.NewRaft(c, fsm, ldb, sdb, fss, tm.Transport())
-	if err != nil {
-		return nil, nil, fmt.Errorf("raft.NewRaft: %v", err)
-	}
-
-	if *raftBootstrap {
-		cfg := raft.Configuration{
-			Servers: []raft.Server{
-				{
-					Suffrage: raft.Voter,
-					ID:       raft.ServerID(myID),
-					Address:  raft.ServerAddress(myAddress),
-				},
-			},
-		}
-		f := r.BootstrapCluster(cfg)
-		if err := f.Error(); err != nil {
-			return nil, nil, fmt.Errorf("raft.Raft.BootstrapCluster: %v", err)
-		}
-	}
-
-	return r, tm, nil
+	defer resp.Body.Close()
+	return nil
 }

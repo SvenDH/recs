@@ -1,0 +1,13 @@
+{{if .Entity -}}
+<div id="{{.Channel}}-{{.Entity}}"
+    {{- if eq .Op 1}} hx-swap-oob="delete"
+    {{- else if not (eq .Op 0)}} hx-swap-oob="true"{{end}}>
+    {{- if ("message" | eq .Component) -}}
+    <div id="{{.Channel}}-{{.Entity}}-message"
+    {{- if eq .Op 4}} hx-swap-oob="delete"
+    {{- else if not (eq .Op 0)}} hx-swap-oob="true"{{end}}>
+        {{- .Value -}}
+    </div>
+    {{- end -}}
+</div>
+{{- end}}

@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+option go_package = "github.com/SvenDH/recs/proto";
+
+service Recs {
+  rpc Publish(Event) returns (Empty) {}
+  rpc CreateWorld(World) returns (Empty) {}
+  rpc DeleteWorld(World) returns (Empty) {}
+  rpc Create(CreateEntity) returns (Entity) {}
+  rpc Delete(DeleteEntity) returns (Empty) {}
+  rpc Set(SetComponent) returns (Empty) {}
+  rpc Remove(RemoveComponent) returns (Empty) {}
+  rpc Move(MoveEntity) returns (MoveEntityResponse) {}
+  rpc Get(GetEntity) returns (stream Component) {}
+}
+
+enum Op {
+  Create = 0;
+  Delete = 1;
+  Add = 2;
+  Set = 3;
+  Remove = 4;
+}
+
+message Empty {}
+
+message Entity {
+  uint64 id = 1;
+}
+
+message Component {
+  optional uint64 commit = 1;
+  optional uint64 entity = 2;
+  bytes value = 3;
+}
+
+message Message {
+  uint64 idx = 1;
+  Op op = 2;
+  uint64 entity = 3;
+  optional string key = 4;
+  optional bytes value = 5;
+}
+
+message Event {
+  string topic = 1;
+  repeated Message messages = 2;
+}
+
+message World {
+  string name = 1;
+}
+
+message CreateEntity {
+  string world = 1;
+  map<string,bytes> components = 2;
+}
+
+message DeleteEntity {
+  string world = 1;
+  Entity entity = 2;
+}
+
+message GetEntity {
+  string world = 1;
+  Entity entity = 2;
+  string component = 3;
+}
+
+message SetComponent {
+  string world = 1;
+  Entity entity = 2;
+  string component = 3;
+  Component value = 4;
+}
+
+message RemoveComponent {
+  string world = 1;
+  Entity entity = 2;
+  string component = 3;
+}
+
+message MoveEntity {
+  string from = 1;
+  string to = 2;
+  bool copy = 4;
+  repeated uint64 entities = 3;
+}
+
+message MoveEntityResponse {
+  repeated uint64 entities = 1;
+}

@@ -1,0 +1,5 @@
+{{block "content" .}}
+<div hx-ext="sse" sse-connect="/events?channel=world">
+    <div sse-swap="message" hx-swap="beforeend"></div>
+</div>
+{{end}}

@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <title>Recs</title>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+
+        <link rel="stylesheet" href="/static/css/style.css" type="text/css" media="screen" />
+        <link rel="stylesheet" href="/static/fonts/font_awesome/all.min.css" type="text/css" />
+        <script src="/static/js/hyperscript.min.js"></script>
+        <script src="https://unpkg.com/htmx.org@2.0.1" integrity="sha384-QWGpdj554B4ETpJJC9z+ZHJcA/i59TyjxEPXiiUgN2WmTyV5OEZWCD6gQhgkdpB/" crossorigin="anonymous"></script>
+        <script src="https://unpkg.com/htmx-ext-sse@2.2.0/sse.js"></script>
+    </head>
+    <body class='{{if .User.Config.lightTheme}}theme-light {{end}}{{block "body_class" .}}{{end}}' hx-headers='{"X-CSRFToken": "{{ .CsrfToken }}"}'>
+        <a id="skip-to-main" class="screenreader-text" href="#main-content">Skip to Content</a>
+        <a id="skip-to-nav" class="screenreader-text" href="#side-navigation">Skip to Navigation</a>
+        <main>
+            {{block "body" .}}
+                <header>
+                    <menu>
+                    </menu>
+                </header>
+
+                {{block "content" .}}{{end}}
+            {{end}}
+        </main>
+    </body>
+</html>
