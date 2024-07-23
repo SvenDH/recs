@@ -8,11 +8,13 @@ import (
 type Op int
 
 const (
-	Create Op = iota
+	Noop Op = iota
+	Create
 	Delete
 	Add
 	Set
 	Remove
+	Snapshot
 )
 
 type Message struct {

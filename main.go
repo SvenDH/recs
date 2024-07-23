@@ -10,7 +10,7 @@ import (
 	"encoding/json"
 	"bytes"
 
-	"github.com/SvenDH/recs/store"
+	"github.com/SvenDH/recs/cluster"
 	"github.com/SvenDH/recs/modules"
 )
 
@@ -36,14 +36,10 @@ func main() {
 	if raftDir == "" {
 		log.Fatalln("No Raft storage directory specified")
 	}
-	if err := os.MkdirAll(raftDir, 0700); err != nil {
-		log.Fatalf("failed to create path for Raft storage: %s", err.Error())
-	}
 	
-	s := store.NewStore(*inmem, *wal)
+	s := cluster.NewServer(*inmem, *wal)
 	modules.RegisterBase(s)
 	modules.RegisterChat(s)
-
 
 	s.Dir = raftDir
 	s.Bind = *raftAddr

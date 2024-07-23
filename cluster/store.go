@@ -1,4 +1,4 @@
-package store
+package cluster
 
 import (
 	"context"
@@ -37,7 +37,7 @@ type conn struct {
 	mtx        sync.Mutex
 }
 
-type Store struct {
+type Server struct {
 	events.Broker
 	Bind        string
 	Dir         string
@@ -60,7 +60,7 @@ type Store struct {
 	raft   *raft.Raft
 	logger *log.Logger
 }
-type fsm Store
+type fsm Server
 
 type command struct {
 	Op    string `json:"o,omitempty"`
@@ -72,8 +72,8 @@ type fsmSnapshot struct {
 	store map[string]string
 }
 
-func NewStore(inmem bool, wal bool) *Store {
-	return &Store{
+func NewServer(inmem bool, wal bool) *Server {
+	return &Server{
 		Broker:      events.NewMemoryBroker(),
 		DialOptions: []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
 		RpcTimeout:  10 * time.Second,
@@ -88,16 +88,16 @@ func NewStore(inmem bool, wal bool) *Store {
 	}
 }
 
-func RegisterComponent[T any](s *Store) {
+func RegisterComponent[T any](s *Server) {
 	tp := reflect.TypeOf((*T)(nil)).Elem()
 	s.components = append(s.components, tp)
 }
 
-func RegisterSystem(s *Store, systems ...world.System) {
+func RegisterSystem(s *Server, systems ...world.System) {
 	s.systems = append(s.systems, systems...)
 }
 
-func (s *Store) Open(enableSingle bool, localID string) error {
+func (s *Server) Open(enableSingle bool, localID string) error {
 	wm := world.NewWorldManager(s.inmem, filepath.Join(s.Dir, "ecs"), s.wal, s)
 	for _, c := range s.components {
 		wm.Components[strings.ToLower(c.Name())] = c
@@ -107,16 +107,12 @@ func (s *Store) Open(enableSingle bool, localID string) error {
 
 	config := raft.DefaultConfig()
 	config.LocalID = raft.ServerID(localID)
-
-	_, port, err := net.SplitHostPort(s.Bind)
-	if err != nil {
-		log.Fatalf("failed to parse local address (%q): %v", s.Bind, err)
+	
+	dir := filepath.Join(s.Dir, localID)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		log.Fatalf("failed to create path for Raft storage: %s", err.Error())
 	}
-	sock, err := net.Listen("tcp", fmt.Sprintf(":%s", port))
-	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
-	}
-	sn, err := raft.NewFileSnapshotStore(s.Dir, retainSnapshotCount, os.Stderr)
+	sn, err := raft.NewFileSnapshotStore(dir, retainSnapshotCount, os.Stderr)
 	if err != nil {
 		return fmt.Errorf("file snapshot store: %s", err)
 	}
@@ -127,7 +123,7 @@ func (s *Store) Open(enableSingle bool, localID string) error {
 		ss = raft.NewInmemStore()
 	} else {
 		boltDB, err := raftboltdb.New(raftboltdb.Options{
-			Path: filepath.Join(s.Dir, "raft.db"),
+			Path: filepath.Join(dir, "raft.db"),
 		})
 		if err != nil {
 			return fmt.Errorf("new bbolt store: %s", err)
@@ -157,18 +153,27 @@ func (s *Store) Open(enableSingle bool, localID string) error {
 	tm.Register(server)
 	Register(server, s.Broker, s.wm)
 
+	_, port, err := net.SplitHostPort(s.Bind)
+	if err != nil {
+		log.Fatalf("failed to parse local address (%q): %v", s.Bind, err)
+	}
+	sock, err := net.Listen("tcp", fmt.Sprintf(":%s", port))
+	if err != nil {
+		log.Fatalf("failed to listen: %v", err)
+	}
 	go server.Serve(sock)
+
 	return nil
 }
 
-func (s *Store) Close() {
+func (s *Server) Close() {
 	for _, c := range s.connections {
 		c.clientConn.Close()
 	}
 	s.Broker.Close()
 }
 
-func (s *Store) getPeer(id raft.ServerID, target raft.ServerAddress) (pb.RecsClient, error) {
+func (s *Server) getPeer(id raft.ServerID, target raft.ServerAddress) (pb.RecsClient, error) {
 	// Connection pool for rpc and publishing
 	s.connectionsMtx.Lock()
 	c, ok := s.connections[id]
@@ -193,7 +198,7 @@ func (s *Store) getPeer(id raft.ServerID, target raft.ServerAddress) (pb.RecsCli
 	return c.client, nil
 }
 
-func (s *Store) findServerWithLeastWorlds() string {
+func (s *Server) findServerWithLeastWorlds() string {
 	// Find server with least amount of assigned worlds
 	var min int
 	var server *raft.Server
@@ -209,7 +214,7 @@ func (s *Store) findServerWithLeastWorlds() string {
 	return string(server.ID)
 }
 
-func (s *Store) findServerWithWorld(world string) (pb.RecsClient, error) {
+func (s *Server) findServerWithWorld(world string) (pb.RecsClient, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	server, ok := s.w2s[world]
@@ -228,15 +233,15 @@ func (s *Store) findServerWithWorld(world string) (pb.RecsClient, error) {
 	return nil, fmt.Errorf("server owning world %s not found", world)
 }
 
-func (s *Store) Subscribe(ctx context.Context, topics ...string) *chan []events.Message {
+func (s *Server) Subscribe(ctx context.Context, topics ...string) *chan []events.Message {
 	return s.Broker.Subscribe(ctx, topics...)
 }
 
-func (s *Store) Unsubscribe(ctx context.Context, sub *chan []events.Message, topics ...string) {
+func (s *Server) Unsubscribe(ctx context.Context, sub *chan []events.Message, topics ...string) {
 	s.Broker.Unsubscribe(ctx, sub, topics...)
 }
 
-func (s *Store) Publish(ctx context.Context, topic string, message []events.Message) error {
+func (s *Server) Publish(ctx context.Context, topic string, message []events.Message) error {
 	m := make([]*pb.Message, len(message))
 	for i, msg := range message {
 		m[i] = &pb.Message{
@@ -278,7 +283,7 @@ func (s *Store) Publish(ctx context.Context, topic string, message []events.Mess
 	return nil
 }
 
-func (s *Store) CreateWorld(ctx context.Context, name string) error {
+func (s *Server) CreateWorld(ctx context.Context, name string) error {
 	if s.raft.State() != raft.Leader {
 		return fmt.Errorf("not leader")
 	}
@@ -293,7 +298,7 @@ func (s *Store) CreateWorld(ctx context.Context, name string) error {
 	return s.raft.Apply(b, raftTimeout).Error()
 }
 
-func (s *Store) DeleteWorld(ctx context.Context, name string) error {
+func (s *Server) DeleteWorld(ctx context.Context, name string) error {
 	if s.raft.State() != raft.Leader {
 		return fmt.Errorf("not leader")
 	}
@@ -304,7 +309,7 @@ func (s *Store) DeleteWorld(ctx context.Context, name string) error {
 	return s.raft.Apply(b, raftTimeout).Error()
 }
 
-func (s *Store) Create(ctx context.Context, world string, components map[string]interface{}) (uint64, error) {
+func (s *Server) Create(ctx context.Context, world string, components map[string]interface{}) (uint64, error) {
 	newComponents := map[string][]byte{}
 	for k, v := range components {
 		val, err := json.Marshal(v)
@@ -340,7 +345,7 @@ func (s *Store) Create(ctx context.Context, world string, components map[string]
 	return resp.Id, nil
 }
 
-func (s *Store) Delete(ctx context.Context, world string, id uint64) error {
+func (s *Server) Delete(ctx context.Context, world string, id uint64) error {
 	c, err := s.findServerWithWorld(world)
 	if err != nil {
 		return err
@@ -349,7 +354,7 @@ func (s *Store) Delete(ctx context.Context, world string, id uint64) error {
 	return err
 }
 
-func (s *Store) Set(ctx context.Context, world string, id uint64, component string, value string) error {
+func (s *Server) Set(ctx context.Context, world string, id uint64, component string, value string) error {
 	c, err := s.findServerWithWorld(world)
 	if err != nil {
 		return err
@@ -367,7 +372,7 @@ func (s *Store) Set(ctx context.Context, world string, id uint64, component stri
 	return err
 }
 
-func (s *Store) Remove(ctx context.Context, world string, id uint64, component string) error {
+func (s *Server) Remove(ctx context.Context, world string, id uint64, component string) error {
 	c, err := s.findServerWithWorld(world)
 	if err != nil {
 		return err
@@ -379,7 +384,7 @@ func (s *Store) Remove(ctx context.Context, world string, id uint64, component s
 	return err
 }
 
-func (s *Store) Move(ctx context.Context, from string, to string, copy bool, entities ...uint64) ([]uint64, error) {
+func (s *Server) Move(ctx context.Context, from string, to string, copy bool, entities ...uint64) ([]uint64, error) {
 	c, err := s.findServerWithWorld(from)
 	if err != nil {
 		return nil, err
@@ -392,7 +397,7 @@ func (s *Store) Move(ctx context.Context, from string, to string, copy bool, ent
 	return resp.Entities, err
 }
 
-func (s *Store) Get(ctx context.Context, world string, id uint64, component string, yield func(uint64, uint64, []byte) bool) error {
+func (s *Server) Get(ctx context.Context, world string, id uint64, component string, yield func(uint64, uint64, []byte) bool) error {
 	c, err := s.findServerWithWorld(world)
 	if err != nil {
 		return err
@@ -471,7 +476,7 @@ func (f *fsm) Restore(rc io.ReadCloser) error {
 
 // Join joins a node, identified by nodeID and located at addr, to this store.
 // The node must be ready to respond to Raft communications at that address.
-func (s *Store) Join(nodeID, addr string) error {
+func (s *Server) Join(nodeID, addr string) error {
 	s.logger.Printf("received join request for remote node %s at %s", nodeID, addr)
 
 	configFuture := s.raft.GetConfiguration()

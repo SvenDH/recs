@@ -62,6 +62,7 @@ func (b *MemoryBroker) Unsubscribe(ctx context.Context, sub *chan []Message, cha
 func (b *MemoryBroker) Publish(ctx context.Context, channel string, messages []Message) error {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
+	
 	if subscribers, found := b.subscribers[channel]; found {
 		for _, sub := range subscribers {
 			select {

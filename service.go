@@ -64,12 +64,6 @@ func (s *Service) handleEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Expose-Headers", "Content-Type")
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
 	url, err := url.Parse(r.URL.String())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -80,40 +74,36 @@ func (s *Service) handleEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no topic specified", http.StatusBadRequest)
 		return
 	}
-	ctx := r.Context()
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Expose-Headers", "Content-Type")
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
 	// Subscribe before fetching the initial state to avoid missing updates
+	ctx := r.Context()
 	subscriber := s.store.Subscribe(ctx, channels...)
 	defer s.store.Unsubscribe(ctx, subscriber, channels...)
 
 	worldIdx := map[string]uint64{}
+	entities := map[string]map[uint64]map[string]interface{}{}
 	for _, n := range channels {
 		worldIdx[n] = 0
+		worldData := map[uint64]map[string]interface{}{}
 		s.store.Get(ctx, n, 0, "", func(idx, id uint64, d []byte) bool {
 			data := map[string]interface{}{}
-			err = json.Unmarshal(d, &data)
-			if err != nil {
+			if err = json.Unmarshal(d, &data); err != nil {
 				return false
 			}
-			// Sent initial state
-			s.sendMessage(w, events.Message{
-				Channel: n,
-				Op:      events.Create,
-				Entity:  id,
-			})
-			for k, v := range data {
-				s.sendMessage(w, events.Message{
-					Channel: n,
-					Op:      events.Add,
-					Entity:  id,
-					Key:     k,
-					Value:   v,
-				})
-			}
+			worldData[id] = data
 			if idx != 0 {
 				worldIdx[n] = idx
 			}
+			// Sent initial state
+			s.sendMessage(w, events.Message{Channel: n, Op: events.Create, Entity: id, Value: data})
 			return true
 		})
+		entities[n] = worldData
 	}
 	flusher.Flush()
 	for {
@@ -158,41 +148,32 @@ func (s *Service) handleKeyRequest(w http.ResponseWriter, r *http.Request) {
 		var id uint64 = 0
 		n, k, v := getKey()
 		if n == "" {
-			err := s.t.Execute(w, nil)
-			if err != nil {
+			if err := s.t.Execute(w, nil); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 			}
 			return
 		}
-		if v == "" {
-			id, err = strconv.ParseUint(k, 10, 64)
-			if err != nil {
-				v = k
-				k = ""
-			}
+		id, err = strconv.ParseUint(k, 10, 64)
+		if v == "" && err != nil {
+			v = k
+			k = ""
 		}
 		if k == "" {
-			io.WriteString(w, "{")
-			err := s.store.Get(ctx, n, 0, v, func(idx, id uint64, d []byte) bool {
+			io.WriteString(w, "[")
+			s.store.Get(ctx, n, 0, v, func(idx, id uint64, d []byte) bool {
 				v := ""
 				if idx == 0 {
 					v += ","
 				}
-				_, err := io.WriteString(
-					w, v + "\"" + strconv.FormatUint(id, 10) + "\":" + string(d))
+				_, err := io.WriteString(w, v + string(d))
 				return err == nil
 			})
-			io.WriteString(w, "}")
-			if err != nil {
-				s.logger.Printf("Failed to get entities: %s", err.Error())
-				w.WriteHeader(http.StatusInternalServerError)
-			}
+			io.WriteString(w, "]")
 		} else {
-			err = s.store.Get(ctx, n, id, v, func(idx, id uint64, d []byte) bool {
+			if s.store.Get(ctx, n, id, v, func(idx, id uint64, d []byte) bool {
 				_, err := w.Write(d)
 				return err == nil
-			})
-			if err != nil {
+			}) != nil {
 				s.logger.Printf("Failed to get entity: %s", err.Error())
 				w.WriteHeader(http.StatusInternalServerError)
 			}
@@ -313,7 +294,11 @@ func (s *Service) handleJoin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) sendMessage(w http.ResponseWriter, msg events.Message) {
-	fmt.Fprintf(w, "data: ")
+	fmt.Fprintf(w, "event: %s\n\ndata: ", "message")
 	s.t.ExecuteTemplate(w, "message.html", msg)
 	fmt.Fprintf(w, "\n\n")
+}
+
+func (s *Service) renderEntity(w io.Writer, e interface{}) {
+	s.t.ExecuteTemplate(w, "entity.html", e)
 }

@@ -1,4 +1,4 @@
-package store
+package cluster
 
 import (
 	"context"
@@ -67,20 +67,19 @@ func (s grpcApi) DeleteWorld(ctx context.Context, req *pb.World) (*pb.Empty, err
 }
 
 func (s grpcApi) Create(ctx context.Context, req *pb.CreateEntity) (*pb.Entity, error) {
-	w := s.getWorld(ctx, req.World)
-	data := map[string]interface{}{}
+	data := []interface{}{}
 	for k, v := range req.Components {
 		t, ok := s.wm.Components[k]
 		if !ok {
 			continue
 		}
-		data[k] = reflect.New(t).Interface()
-		err := json.Unmarshal(v, data[k])
-		if err != nil {
+		c := reflect.New(t).Interface()
+		if err := json.Unmarshal(v, c); err != nil {
 			return nil, err
 		}
+		data = append(data, c)
 	}
-	e, err := w.Create(ctx, data)
+	e, err := s.getWorld(ctx, req.World).New(ctx, data...)
 	if err != nil {
 		return nil, err
 	}
@@ -88,56 +87,61 @@ func (s grpcApi) Create(ctx context.Context, req *pb.CreateEntity) (*pb.Entity, 
 }
 
 func (s grpcApi) Delete(ctx context.Context, req *pb.DeleteEntity) (*pb.Empty, error) {
-	w := s.getWorld(ctx, req.World)
-	return &pb.Empty{}, w.Delete(ctx, req.Entity.Id)
+	return &pb.Empty{}, s.getWorld(ctx, req.World).Delete(ctx, req.Entity.Id)
 }
 
 func (s grpcApi) Set(ctx context.Context, req *pb.SetComponent) (*pb.Empty, error) {
-	w := s.getWorld(ctx, req.World)
 	t, ok := s.wm.Components[req.Component]
 	if !ok {
 		return nil, fmt.Errorf("component %s not found", req.Component)
 	}
-	d := reflect.New(t).Interface()
-	err := json.Unmarshal(req.Value.Value, d)
-	if err != nil {
+	d := reflect.New(t)
+	if err := json.Unmarshal(req.Value.Value, d.Interface()); err != nil {
 		return nil, err
 	}
-	return &pb.Empty{}, w.Set(ctx, req.Entity.Id, req.Component, d)
+	return &pb.Empty{}, s.getWorld(ctx, req.World).Set(ctx, req.Entity.Id, d.Elem().Interface())
 }
 
 func (s grpcApi) Remove(ctx context.Context, req *pb.RemoveComponent) (*pb.Empty, error) {
-	w := s.getWorld(ctx, req.World)
-	return &pb.Empty{}, w.Remove(ctx, req.Entity.Id, req.Component)
+	return &pb.Empty{}, s.getWorld(ctx, req.World).Remove(ctx, req.Entity.Id, req.Component)
 }
 
 func (s grpcApi) Get(req *pb.GetEntity, stream pb.Recs_GetServer) error {
-	ctx := stream.Context()
-	w := s.getWorld(ctx, req.World)
 	var ent uint64
 	if req.Entity != nil {
 		ent = req.Entity.Id
 	}
-	return w.Iterate(
-		ctx,
-		ent,
-		req.Component,
-		func (idx uint64, e uint64, v interface{}) error {
-			j, err := json.Marshal(v)
-			if err != nil {
-				return err
-			}
-			var ip *uint64
-			if idx != 0 {
-				ip = &idx
-			}
-			return stream.Send(&pb.Component{Commit: ip, Entity: &e, Value: j})
-		},
-	)
+	w := s.getWorld(stream.Context(), req.World)
+	if ent == 0 {
+		return w.Iter(
+			stream.Context(),
+			req.Component,
+			func(idx uint64, e uint64, v interface{}) error {
+				j, err := json.Marshal(v)
+				if err != nil {
+					return err
+				}
+				var ip *uint64
+				if idx != 0 {
+					ip = &idx
+				}
+				return stream.Send(&pb.Component{Commit: ip, Entity: &e, Value: j})
+			},
+		)
+	}
+	idx, d := w.Get(stream.Context(), ent, req.Component)
+	j, err := json.Marshal(d)
+	if err != nil {
+		return err
+	}
+	var ip *uint64
+	if idx != 0 {
+		ip = &idx
+	}
+	return stream.Send(&pb.Component{Commit: ip, Entity: &ent, Value: j})
 }
 
 func (s grpcApi) Move(ctx context.Context, req *pb.MoveEntity) (*pb.MoveEntityResponse, error) {
-	w := s.getWorld(ctx, req.From)
-	arr, err := w.Move(ctx, req.To, req.Copy, req.Entities...)
+	arr, err := s.getWorld(ctx, req.From).Move(ctx, req.To, req.Copy, req.Entities...)
 	return &pb.MoveEntityResponse{Entities: arr}, err
 }

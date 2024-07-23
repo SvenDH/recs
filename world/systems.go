@@ -41,7 +41,7 @@ func (s *PersistSystem) Initialize(w *ecs.World) {}
 
 func (s *PersistSystem) Update(w *ecs.World) {
 	if ecs.GetResource[Tick](w).Tick%s.UpdateInterval == 0 {
-		ecs.GetResource[World](w).Save(false)
+		ecs.GetResource[World](w).TryCompact()
 	}
 }
 

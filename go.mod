@@ -26,7 +26,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.2.5 // indirect
 	github.com/mlange-42/arche-serde v0.2.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/tidwall/btree v1.6.0 // indirect
+	github.com/tidwall/btree v1.7.0 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	go.etcd.io/bbolt v1.3.5 // indirect
 	google.golang.org/protobuf v1.31.0 // indirect
