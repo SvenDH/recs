@@ -142,7 +142,7 @@ func NewWorldManager(inmem bool, dir string, wal bool, b Store) *WorldManager {
 				} else {
 					t := wm.Components[cn]
 					p := reflect.NewAt(t, w.GetUnchecked(ee.Entity, c)).Interface()
-					d = reflect.ValueOf(p).Elem().Interface()
+					d = reflect.ValueOf(p).Interface()
 				}
 				w2.addToLog(events.Message{Op: events.Add, Entity: id, Key: cn, Value: d})
 			}

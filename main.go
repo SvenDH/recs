@@ -1,26 +1,26 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
-	"net/http"
-	"encoding/json"
-	"bytes"
 
 	"github.com/SvenDH/recs/cluster"
 	"github.com/SvenDH/recs/modules"
 )
 
 var (
-	inmem = flag.Bool("inmem", false, "Use in-memory storage for Raft")
-	wal = flag.Bool("wal", true, "Use on-disk write-ahead log for Raft")
+	inmem    = flag.Bool("inmem", false, "Use in-memory storage for Raft")
+	wal      = flag.Bool("wal", true, "Use on-disk write-ahead log for Raft")
 	raftAddr = flag.String("raddr", "127.0.0.1:12000", "TCP host+port for the raft chatter for this node")
 	httpAddr = flag.String("haddr", "127.0.0.1:8080", "HTTP host+port for this node")
 	joinAddr = flag.String("join", "", "Host+port of leader to join")
-	nodeID = flag.String("id", "", "Node id used by Raft")
+	nodeID   = flag.String("id", "node0", "Node id used by Raft")
 )
 
 func main() {
@@ -36,10 +36,11 @@ func main() {
 	if raftDir == "" {
 		log.Fatalln("No Raft storage directory specified")
 	}
-	
+
 	s := cluster.NewServer(*inmem, *wal)
 	modules.RegisterBase(s)
 	modules.RegisterChat(s)
+	modules.RegisterPhysics(s)
 
 	s.Dir = raftDir
 	s.Bind = *raftAddr
@@ -47,7 +48,7 @@ func main() {
 		log.Fatalf("failed to open store: %s", err.Error())
 	}
 
-	h := NewService(*httpAddr, s)
+	h := NewServer(*httpAddr, s)
 	if err := h.Start(); err != nil {
 		log.Fatalf("failed to start HTTP service: %s", err.Error())
 	}
