@@ -16,9 +16,14 @@ import (
 	"github.com/SvenDH/recs/events"
 )
 
+var fs = http.FileServer(http.Dir("./static"))
+var t = template.Must(template.ParseFiles(
+	"templates/index.html",
+))
+
 type StoreService interface {
-	Subscribe(ctx context.Context, topics ...string) *chan []events.Message
-	Unsubscribe(ctx context.Context, sub *chan []events.Message, topics ...string)
+	Subscribe(ctx context.Context, topics ...string) *chan events.Messages
+	Unsubscribe(ctx context.Context, sub *chan events.Messages, topics ...string)
 	CreateWorld(ctx context.Context, name string) error
 	DeleteWorld(ctx context.Context, name string) error
 	Create(ctx context.Context, world string, components map[string]interface{}) (uint64, error)
@@ -29,67 +34,10 @@ type StoreService interface {
 	Join(nodeID string, addr string) error
 }
 
-type update struct {
-	Channel string
-	Id      uint64
-	Value   map[string]interface{}
-	Message events.Message
-}
-
-type View struct {
-	template   string
-	event      string
-	components []string
-}
-
-func (v *View) render(t *template.Template, w io.Writer, u update) {
-	for _, c := range v.components {
-		if v, ok := u.Value[c]; !ok || v == nil {
-			return
-		}
-	}
-	fmt.Fprintf(w, "event: %s\ndata: ", v.event)
-	err := t.ExecuteTemplate(w, v.template, u)
-	if err != nil {
-		log.Printf("Failed to render template: %s", err.Error())
-	}
-	fmt.Fprintf(w, "\n\n")
-}
-
 type Server struct {
 	addr   string
 	store  StoreService
-	t      *template.Template
 	logger *log.Logger
-	Views  []View
-}
-
-type Renderer struct {
-	s    *Server
-	ents map[uint64]map[string]interface{}
-}
-
-func (r *Renderer) render(w io.Writer, m events.Message) {
-	if m.Entity == 0 {
-		return
-	}
-	if m.Op == events.Create {
-		if m.Value == nil {
-			r.ents[m.Entity] = map[string]interface{}{}
-		} else {
-			r.ents[m.Entity] = m.Value.(map[string]interface{})
-		}
-	} else if m.Op == events.Delete {
-		delete(r.ents, m.Entity)
-	} else if m.Op == events.Add || m.Op == events.Set {
-		r.ents[m.Entity][m.Key] = m.Value
-	} else if m.Op == events.Remove {
-		delete(r.ents[m.Entity], m.Key)
-	}
-	u := update{Channel: m.Channel, Id: m.Entity, Value: r.ents[m.Entity], Message: m}
-	for _, v := range r.s.Views {
-		v.render(r.s.t, w, u)
-	}
 }
 
 func NewServer(addr string, store StoreService) *Server {
@@ -97,20 +45,10 @@ func NewServer(addr string, store StoreService) *Server {
 		addr:   addr,
 		store:  store,
 		logger: log.New(os.Stderr, "[http]: ", log.LstdFlags),
-		Views: []View{
-			{template: "message.html", event: "message", components: []string{"message"}},
-			{template: "entity.html", event: "entity", components: []string{"position"}},
-		},
 	}
 }
 
 func (s *Server) Start() error {
-	s.t = template.Must(template.ParseFiles(
-		"templates/index.html",
-		"templates/entity.html",
-		"templates/message.html",
-	))
-	fs := http.FileServer(http.Dir("./static"))
 	http.HandleFunc("/join", s.handleJoin)
 	http.HandleFunc("/events", s.handleEvents)
 	http.Handle("/static/", http.StripPrefix("/static/", fs))
@@ -149,23 +87,22 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	defer s.store.Unsubscribe(ctx, subscriber, channels...)
 
 	worldIdx := map[string]uint64{}
-	renderers := map[string]*Renderer{}
 	for _, n := range channels {
+		m := []events.Message{}
 		worldIdx[n] = 0
-		r := Renderer{ents: map[uint64]map[string]interface{}{}, s: s}
 		s.store.Get(ctx, n, 0, "", func(idx, id uint64, d []byte) bool {
 			data := map[string]interface{}{}
 			if err = json.Unmarshal(d, &data); err != nil {
 				return false
 			}
 			// Sent initial state
-			r.render(w, events.Message{Channel: n, Op: events.Create, Entity: id, Value: data})
+			m = append(m, events.Message{Op: events.Create, Entity: id, Value: data})
 			if idx != 0 {
 				worldIdx[n] = idx
 			}
 			return true
 		})
-		renderers[n] = &r
+		s.sendMessage(w, n, m)
 	}
 	flusher.Flush()
 	for {
@@ -175,14 +112,19 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				s.store.Unsubscribe(ctx, subscriber, channels...)
 				return
 			}
-			for _, c := range msg {
+			m := events.Messages{Channel: msg.Channel, Messages: []events.Message{}}
+			for _, c := range msg.Messages {
 				// Only send the message if it's newer than the last version of the world we sent
-				idx, ok := worldIdx[c.Channel]
+				idx, ok := worldIdx[msg.Channel]
 				if !ok || c.Idx > idx {
-					renderers[c.Channel].render(w, c)
+					worldIdx[msg.Channel] = c.Idx
+					m.Messages = append(m.Messages, c)
 				}
 			}
-			flusher.Flush()
+			if len(m.Messages) > 0 {
+				s.sendMessage(w, m.Channel, m.Messages)
+				flusher.Flush()
+			}
 		case <-ctx.Done():
 			s.store.Unsubscribe(ctx, subscriber, channels...)
 			return
@@ -209,7 +151,7 @@ func (s *Server) handleKeyRequest(w http.ResponseWriter, r *http.Request) {
 		var id uint64 = 0
 		n, k, v := getKey()
 		if n == "" {
-			if err := s.t.Execute(w, nil); err != nil {
+			if err := t.Execute(w, nil); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 			}
 			return
@@ -354,8 +296,24 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) sendMessage(w http.ResponseWriter, msg events.Message) {
-	fmt.Fprintf(w, "event: %s\n\ndata: ", "message")
-	s.t.ExecuteTemplate(w, "message.html", msg)
-	fmt.Fprintf(w, "\n\n")
+func (s *Server) sendMessage(w http.ResponseWriter, channel string, msg []events.Message) {
+	data := ""
+	key := ""
+	for i, m := range msg {
+		if key != m.Key {
+			key = m.Key
+		} else {
+			m.Key = ""
+		}
+		val, err := json.Marshal(m)
+		if err != nil {
+			s.logger.Printf("Failed to marshal message: %s", err.Error())
+			return
+		}
+		if i > 0 {
+			data += ","
+		}
+		data += string(val)
+	}
+	fmt.Fprintf(w, "data: {\"chn\":\"%s\",\"evt\":[%s]}\n\n", channel, data)
 }

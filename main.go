@@ -12,6 +12,7 @@ import (
 
 	"github.com/SvenDH/recs/cluster"
 	"github.com/SvenDH/recs/modules"
+	"github.com/SvenDH/recs/modules/physics"
 )
 
 var (
@@ -37,12 +38,13 @@ func main() {
 		log.Fatalln("No Raft storage directory specified")
 	}
 
-	s := cluster.NewServer(*inmem, *wal)
+	s := cluster.NewServer(raftDir, *inmem, *wal)
+
 	modules.RegisterBase(s)
 	modules.RegisterChat(s)
-	modules.RegisterPhysics(s)
-
-	s.Dir = raftDir
+	modules.RegisterSprite(s)
+	physics.RegisterPhysics(s)
+	
 	s.Bind = *raftAddr
 	if err := s.Open(*joinAddr == "", *nodeID); err != nil {
 		log.Fatalf("failed to open store: %s", err.Error())

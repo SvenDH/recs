@@ -10,14 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"sync"
 	"time"
 
-	transport "github.com/Jille/raft-grpc-transport"
 	"github.com/SvenDH/recs/events"
 	pb "github.com/SvenDH/recs/proto"
 	world "github.com/SvenDH/recs/world"
+	transport "github.com/Jille/raft-grpc-transport"
 	"github.com/hashicorp/raft"
 	raftboltdb "github.com/hashicorp/raft-boltdb/v2"
 	"google.golang.org/grpc"
@@ -40,13 +39,12 @@ type conn struct {
 type Server struct {
 	events.Broker
 	Bind        string
-	Dir         string
 	DialOptions []grpc.DialOption
 	RpcTimeout  time.Duration
+
+	dir         string
 	inmem       bool
 	wal         bool
-	components  []reflect.Type
-	systems     []world.System
 
 	mu  sync.Mutex
 	s2w map[string][]string // The worlds per node id
@@ -72,8 +70,8 @@ type fsmSnapshot struct {
 	store map[string]string
 }
 
-func NewServer(inmem bool, wal bool) *Server {
-	return &Server{
+func NewServer(dir string, inmem, wal bool) *Server {
+	s := &Server{
 		Broker:      events.NewMemoryBroker(),
 		DialOptions: []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
 		RpcTimeout:  10 * time.Second,
@@ -81,34 +79,27 @@ func NewServer(inmem bool, wal bool) *Server {
 		w2s:         make(map[string]string),
 		inmem:       inmem,
 		wal:         wal,
-		components:  make([]reflect.Type, 0),
-		systems:     make([]world.System, 0),
 		connections: make(map[raft.ServerID]*conn),
 		logger:      log.New(os.Stderr, "[store]: ", log.LstdFlags),
 	}
+	s.wm = world.NewWorldManager(s.inmem, filepath.Join(dir, "ecs"), wal, s)
+	return s
 }
 
-func RegisterComponent[T any](s *Server) {
+func RegisterComponent[T any](s *Server, share, log, save bool) {
 	tp := reflect.TypeOf((*T)(nil)).Elem()
-	s.components = append(s.components, tp)
+	s.wm.AddComponent(tp, share, log, save)
 }
 
 func RegisterSystem(s *Server, systems ...world.System) {
-	s.systems = append(s.systems, systems...)
+	s.wm.Systems = append(s.wm.Systems, systems...)
 }
 
 func (s *Server) Open(enableSingle bool, localID string) error {
-	wm := world.NewWorldManager(s.inmem, filepath.Join(s.Dir, "ecs"), s.wal, s)
-	for _, c := range s.components {
-		wm.Components[strings.ToLower(c.Name())] = c
-	}
-	wm.Systems = append(wm.Systems, s.systems...)
-	s.wm = wm
-
 	config := raft.DefaultConfig()
 	config.LocalID = raft.ServerID(localID)
 	
-	dir := filepath.Join(s.Dir, localID)
+	dir := filepath.Join(s.dir, localID)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		log.Fatalf("failed to create path for Raft storage: %s", err.Error())
 	}
@@ -233,11 +224,11 @@ func (s *Server) findServerWithWorld(world string) (pb.RecsClient, error) {
 	return nil, fmt.Errorf("server owning world %s not found", world)
 }
 
-func (s *Server) Subscribe(ctx context.Context, topics ...string) *chan []events.Message {
+func (s *Server) Subscribe(ctx context.Context, topics ...string) *chan events.Messages {
 	return s.Broker.Subscribe(ctx, topics...)
 }
 
-func (s *Server) Unsubscribe(ctx context.Context, sub *chan []events.Message, topics ...string) {
+func (s *Server) Unsubscribe(ctx context.Context, sub *chan events.Messages, topics ...string) {
 	s.Broker.Unsubscribe(ctx, sub, topics...)
 }
 
@@ -250,7 +241,7 @@ func (s *Server) Publish(ctx context.Context, topic string, message []events.Mes
 			Entity: msg.Entity,
 		}
 		if msg.Key != "" {
-			m[i].Key = &msg.Key
+			m[i].Key = &message[i].Key
 		}
 		if msg.Value != nil {
 			v, err := json.Marshal(msg.Value)

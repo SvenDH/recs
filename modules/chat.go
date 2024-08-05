@@ -13,9 +13,7 @@ type Chat struct {
 }
 
 func RegisterChat(s *cluster.Server) {
-	cluster.RegisterComponent[Message](s)
-	cluster.RegisterComponent[Chat](s)
+	cluster.RegisterComponent[Message](s, true, true, true)
+	cluster.RegisterComponent[Chat](s, true, true, true)
 	//cluster.RegisterSystem(s, &Chat{})
 }
-
-

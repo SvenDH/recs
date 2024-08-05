@@ -8,6 +8,6 @@ type Name string
 type Owner string
 
 func RegisterBase(s *cluster.Server) {
-	cluster.RegisterComponent[Name](s)
-	cluster.RegisterComponent[Owner](s)
+	cluster.RegisterComponent[Name](s, true, true, true)
+	cluster.RegisterComponent[Owner](s, true, true, true)
 }

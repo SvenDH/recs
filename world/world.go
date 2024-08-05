@@ -35,14 +35,22 @@ type ChildOf struct {
 
 type Parent uint64
 
+type ComponentInfo struct {
+	Type  reflect.Type
+	Name  string
+	Share bool
+	Log   bool
+	Save  bool
+	// TODO: Implement save filtering
+}
+
 type WorldManager struct {
-	worlds                map[string]*World
-	Components            map[string]reflect.Type
-	Systems               []System
-	TPS                   float64
-	Steps                 int64
-	ResetTerminationSteps bool
-	Wal                   bool
+	worlds     map[string]*World
+	Components map[string]ComponentInfo
+	Systems    []System
+	TPS        float64
+	Steps      int64
+	Wal        bool
 
 	mu          sync.RWMutex
 	listener    listener.Dispatch
@@ -57,11 +65,10 @@ type WorldManager struct {
 type World struct {
 	world ecs.World
 
-	TPS                   float64
-	Paused                bool
-	ResetTerminationSteps bool
-	CommitIndex           uint64
-	MaxIdx                uint32
+	TPS         float64
+	Paused      bool
+	CommitIndex uint64
+	MaxIdx      uint32
 
 	wm        *WorldManager
 	name      string
@@ -73,7 +80,7 @@ type World struct {
 	changed   bool
 	step      int64
 	logFile   *os.File
-	parentID ecs.ID
+	parentID  ecs.ID
 
 	rand        Rand
 	time        Tick
@@ -96,18 +103,17 @@ func NewWorldManager(inmem bool, dir string, wal bool, b Store) *WorldManager {
 		}
 	}
 	wm := &WorldManager{
-		worlds:                make(map[string]*World, 0),
-		Components:            make(map[string]reflect.Type, 0),
-		Systems:               make([]System, 0),
-		Steps:                 300,
-		ResetTerminationSteps: true,
-		Wal:                   wal,
-		worldToName:           make(map[*ecs.World]string, 0),
-		store:                 b,
-		inmem:                 inmem,
-		dir:                   dir,
-		logger:                log.New(os.Stderr, "[world]: ", log.LstdFlags),
-		newlineRe:             regexp.MustCompile(`\n`),
+		worlds:      make(map[string]*World, 0),
+		Components:  make(map[string]ComponentInfo, 0),
+		Systems:     make([]System, 0),
+		Steps:       300,
+		Wal:         wal,
+		worldToName: make(map[*ecs.World]string, 0),
+		store:       b,
+		inmem:       inmem,
+		dir:         dir,
+		logger:      log.New(os.Stderr, "[world]: ", log.LstdFlags),
+		newlineRe:   regexp.MustCompile(`\n`),
 	}
 
 	createListener := listener.NewCallback(
@@ -141,8 +147,8 @@ func NewWorldManager(inmem bool, dir string, wal bool, b Store) *WorldManager {
 					d = Parent(entityToId(p))
 				} else {
 					t := wm.Components[cn]
-					p := reflect.NewAt(t, w.GetUnchecked(ee.Entity, c)).Interface()
-					d = reflect.ValueOf(p).Interface()
+					p := reflect.NewAt(t.Type, w.GetUnchecked(ee.Entity, c))
+					d = reflect.ValueOf(p.Interface()).Interface()
 				}
 				w2.addToLog(events.Message{Op: events.Add, Entity: id, Key: cn, Value: d})
 			}
@@ -177,7 +183,12 @@ func NewWorldManager(inmem bool, dir string, wal bool, b Store) *WorldManager {
 		&relationListener,
 	)
 
-	wm.Components["parent"] = reflect.TypeOf(Parent(0))
+	wm.Components["par"] = ComponentInfo{
+		Type:  reflect.TypeOf(Parent(0)),
+		Name:  "par",
+		Share: true,
+		Save:  true,
+	}
 
 	return wm
 }
@@ -200,12 +211,17 @@ func (wm *WorldManager) New(ctx context.Context, name string) *World {
 		terminate: Termination{},
 	}
 	for _, c := range wm.Components {
-		n := strings.ToLower(c.Name())
+		n := c.Name
+		_, ok := w.comps[n]
+		if ok {
+			wm.logger.Printf("component with first 3 letters %s already exists in world %s", n, name)
+			continue
+		}
 		var id ecs.ID
-		if n == "parent" {
+		if n == "par" {
 			id = ecs.ComponentID[ChildOf](&w.world)
 		} else {
-			id = ecs.TypeID(&w.world, c)
+			id = ecs.TypeID(&w.world, c.Type)
 		}
 		w.comps[n] = id
 		w.compNames[id] = n
@@ -219,7 +235,11 @@ func (wm *WorldManager) New(ctx context.Context, name string) *World {
 	ecs.AddResource(&w.world, w)
 
 	for _, s := range wm.Systems {
-		w.AddSystem(s)
+		// Copy systems with their initial values
+		val := reflect.ValueOf(s).Elem()
+		newsys := reflect.New(val.Type())
+		newsys.Elem().Set(val)
+		w.AddSystem(newsys.Interface().(System))
 	}
 	// At each step
 	w.AddSystem(&EventPublisher{
@@ -243,7 +263,6 @@ func (wm *WorldManager) New(ctx context.Context, name string) *World {
 	}
 
 	w.terminate.Terminate = false
-	w.ResetTerminationSteps = wm.ResetTerminationSteps
 	w.TPS = wm.TPS
 
 	w.world.SetListener(&wm.listener)
@@ -294,12 +313,23 @@ func (wm *WorldManager) Get(ctx context.Context, name string) *World {
 	return w
 }
 
+func (wm *WorldManager) AddComponent(t reflect.Type, share, log, save bool) {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+	n := getName(t)
+	wm.Components[n] = ComponentInfo{
+		Type:  t,
+		Name:  n,
+		Share: share,
+		Log:   log,
+		Save:  save,
+	}
+}
+
 func (w *World) New(ctx context.Context, components ...interface{}) (uint64, error) {
-	ecsComponents := make([]ecs.Component, 0)
-	parents := []ecs.Entity{}
+	ecsComponents, parents := []ecs.Component{}, []ecs.Entity{}
 	for _, v := range components {
-		t := reflect.TypeOf(v).Elem()
-		cid, ok := w.comps[strings.ToLower(t.Name())]
+		cid, ok := w.comps[getName(reflect.TypeOf(v).Elem())]
 		if ok {
 			if cid == w.parentID {
 				newParent, err := w.idToEntity(uint64(*(v.(*Parent))))
@@ -318,6 +348,7 @@ func (w *World) New(ctx context.Context, components ...interface{}) (uint64, err
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.Ping()
 	return entityToId(builder.New(parents...)), nil
 }
 
@@ -329,6 +360,7 @@ func (w *World) Delete(ctx context.Context, e uint64) error {
 		return err
 	}
 	w.world.RemoveEntity(ent)
+	w.Ping()
 	return nil
 }
 
@@ -340,8 +372,7 @@ func (w *World) Set(ctx context.Context, e uint64, values ...interface{}) error 
 		return err
 	}
 	for _, v := range values {
-		t := reflect.TypeOf(v)
-		n := strings.ToLower(t.Name())
+		n := getName(reflect.TypeOf(v))
 		c, ok := w.comps[n]
 		if !ok {
 			continue
@@ -357,6 +388,7 @@ func (w *World) Set(ctx context.Context, e uint64, values ...interface{}) error 
 		}
 		w.setPublish(e, n, v)
 	}
+	w.Ping()
 	return nil
 }
 
@@ -375,6 +407,7 @@ func (w *World) Remove(ctx context.Context, e uint64, n string) error {
 		return fmt.Errorf("entity %d does not have component %s", e, n)
 	}
 	w.world.Remove(ent, t)
+	w.Ping()
 	return nil
 }
 
@@ -406,6 +439,7 @@ func (w *World) Move(ctx context.Context, to string, copy bool, entities ...uint
 		}
 		newEntities = append(newEntities, new)
 	}
+	w.Ping()
 	return newEntities, nil
 
 }
@@ -460,6 +494,11 @@ func (w *World) Iter(
 	return nil
 }
 
+func (w *World) Publish(e ecs.Entity, v interface{}) {
+	w.setPublish(entityToId(e), getName(reflect.TypeOf(v)), v)
+	w.step = 0
+}
+
 func (w *World) checkComponents(components string) (map[string]ecs.ID, error) {
 	comps := w.comps
 	if components != "" {
@@ -476,20 +515,21 @@ func (w *World) checkComponents(components string) (map[string]ecs.ID, error) {
 }
 
 func (w *World) addToLog(l events.Message) {
-	l.Idx = w.CommitIndex + 1
-	w.log = append(w.log, l)
 	w.CommitIndex += 1
-	w.changed = true
-	if w.ResetTerminationSteps {
-		w.step = 0
+	l.Idx = w.CommitIndex
+	if w.wm.Components[l.Key].Share {
+		w.log = append(w.log, l)
 	}
-	if w.logFile != nil {
-		s, _ := json.Marshal(l)
-		_, err := w.logFile.WriteString(string(s) + "\n")
-		if err != nil {
+	if w.logFile != nil && w.wm.Components[l.Key].Log {
+		if _, err := w.logFile.WriteString(l.Serialize() + "\n"); err != nil {
 			log.Printf("error writing to log file: %s", err)
 		}
 	}
+	w.changed = true
+}
+
+func (w *World) Ping() {
+	w.step = 0
 }
 
 func (w *World) setPublish(e uint64, n string, d interface{}) {
@@ -511,7 +551,9 @@ func (w *World) getComp(e uint64, n string, c ecs.ID) interface{} {
 			return Parent(entityToId(w.world.Relations().Get(ent, w.parentID)))
 		} else {
 			t := w.wm.Components[n]
-			return reflect.NewAt(t, w.world.GetUnchecked(ent, c)).Interface()
+			if t.Share {
+				return reflect.NewAt(t.Type, w.world.GetUnchecked(ent, c)).Interface()
+			}
 		}
 	}
 	return nil
@@ -546,18 +588,14 @@ func (w *World) TryCompact() error {
 	if err != nil {
 		return err
 	}
-	newDat := w.wm.newlineRe.ReplaceAllString(string(dat), "")
-	dat, err = json.Marshal(events.Message{
+	newDat := events.Message{
 		Idx:   w.CommitIndex,
 		Op:    events.Snapshot,
-		Value: newDat,
-	})
-	if err != nil {
-		return err
-	}
+		Value: w.wm.newlineRe.ReplaceAllString(string(dat), ""),
+	}.Serialize()
 	// Save snapshot to temporary file
 	path := filepath.Join(w.wm.dir, w.name)
-	err = os.WriteFile(path+".tmp", []byte(string(dat)+"\n"), 0644)
+	err = os.WriteFile(path+".tmp", []byte(newDat+"\n"), 0644)
 	if err != nil {
 		return err
 	}
@@ -565,12 +603,10 @@ func (w *World) TryCompact() error {
 		w.logFile.Close()
 	}
 	// Rename temporary file to actual file
-	err = os.Rename(path+".tmp", path)
-	if err != nil {
-		return err
+	if err = os.Rename(path+".tmp", path); err != nil {
+		w.wm.logger.Printf("error renaming file: %s", err)
 	}
-	w.logFile, err = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
+	if w.logFile, err = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644); err != nil {
 		return err
 	}
 	w.changed = false
@@ -591,8 +627,7 @@ func (w *World) Load() error {
 	scanner := bufio.NewScanner(logFile)
 	for scanner.Scan() {
 		var l events.Message
-		err := json.Unmarshal(scanner.Bytes(), &l)
-		if err != nil {
+		if err := l.Deserialize(scanner.Text()); err != nil {
 			return err
 		}
 		if l.Idx > w.CommitIndex {
@@ -613,19 +648,17 @@ func (w *World) applyLog(l *events.Message) error {
 	var ok bool
 	var d interface{}
 	if l.Op != events.Create && l.Op != events.Snapshot {
-		ent, err = w.idToEntity(l.Entity)
-		if err != nil {
+		if ent, err = w.idToEntity(l.Entity); err != nil {
 			return err
 		}
 	}
 	if l.Key != "" {
-		comp, ok = w.comps[l.Key]
-		if !ok {
+		if comp, ok = w.comps[l.Key]; !ok {
 			return fmt.Errorf("component %s not found", l.Key)
 		}
 		if l.Value != nil {
 			v, _ := json.Marshal(l.Value)
-			d = reflect.New(w.wm.Components[l.Key]).Interface()
+			d = reflect.New(w.wm.Components[l.Key].Type).Interface()
 			err = json.Unmarshal(v, d)
 			if err != nil {
 				return err
@@ -850,4 +883,8 @@ func idToEntity(id uint64) ecs.Entity {
 	*realPtrToId = uint32(id >> 32)
 	*realPtrToGen = uint32(id & 0xFFFFFFFF)
 	return ent
+}
+
+func getName(typ reflect.Type) string {
+	return strings.ToLower(typ.Name())[:3]
 }

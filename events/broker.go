@@ -7,14 +7,19 @@ import (
 	"time"
 )
 
+type Messages struct {
+	Channel string
+	Messages []Message
+}
+
 type Subscriber struct {
-	Channel     chan []Message
+	Channel     chan Messages
 	Unsubscribe chan bool
 }
 
 type Broker interface {
-	Subscribe(ctx context.Context, channels ...string) *chan []Message
-	Unsubscribe(ctx context.Context, sub *chan []Message, channels ...string)
+	Subscribe(ctx context.Context, channels ...string) *chan Messages
+	Unsubscribe(ctx context.Context, sub *chan Messages, channels ...string)
 	Publish(ctx context.Context, topic string, messages []Message) error
 	Close()
 }
@@ -28,9 +33,9 @@ func NewMemoryBroker() Broker {
 	return &MemoryBroker{subscribers: make(map[string][]*Subscriber)}
 }
 
-func (b *MemoryBroker) Subscribe(ctx context.Context, channels ...string) *chan []Message {
+func (b *MemoryBroker) Subscribe(ctx context.Context, channels ...string) *chan Messages {
 	sub := &Subscriber{
-		Channel:     make(chan []Message, 1),
+		Channel:     make(chan Messages, 1),
 		Unsubscribe: make(chan bool),
 	}
 	b.mutex.Lock()
@@ -42,7 +47,7 @@ func (b *MemoryBroker) Subscribe(ctx context.Context, channels ...string) *chan 
 	return &sub.Channel
 }
 
-func (b *MemoryBroker) Unsubscribe(ctx context.Context, sub *chan []Message, channels ...string) {
+func (b *MemoryBroker) Unsubscribe(ctx context.Context, sub *chan Messages, channels ...string) {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 
@@ -66,7 +71,7 @@ func (b *MemoryBroker) Publish(ctx context.Context, channel string, messages []M
 	if subscribers, found := b.subscribers[channel]; found {
 		for _, sub := range subscribers {
 			select {
-			case sub.Channel <- messages:
+			case sub.Channel <- Messages{Channel: channel, Messages: messages}:
 			case <-time.After(time.Second):
 				fmt.Printf("Subscriber slow. Unsubscribing from channel: %s\n", channel)
 				b.Unsubscribe(ctx, &sub.Channel, channel)

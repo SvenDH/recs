@@ -35,7 +35,6 @@ func (s grpcApi) Publish(ctx context.Context, req *pb.Event) (*pb.Empty, error) 
 	newMessages := make([]events.Message, len(req.Messages))
 	for _, message := range req.Messages {
 		msg := events.Message{
-			Channel: req.Topic,
 			Idx:     message.Idx,
 			Op:      events.Op(message.Op),
 			Entity:  message.Entity,
@@ -73,7 +72,7 @@ func (s grpcApi) Create(ctx context.Context, req *pb.CreateEntity) (*pb.Entity, 
 		if !ok {
 			continue
 		}
-		c := reflect.New(t).Interface()
+		c := reflect.New(t.Type).Interface()
 		if err := json.Unmarshal(v, c); err != nil {
 			return nil, err
 		}
@@ -95,7 +94,7 @@ func (s grpcApi) Set(ctx context.Context, req *pb.SetComponent) (*pb.Empty, erro
 	if !ok {
 		return nil, fmt.Errorf("component %s not found", req.Component)
 	}
-	d := reflect.New(t)
+	d := reflect.New(t.Type)
 	if err := json.Unmarshal(req.Value.Value, d.Interface()); err != nil {
 		return nil, err
 	}

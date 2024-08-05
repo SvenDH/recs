@@ -41,7 +41,10 @@ func (s *PersistSystem) Initialize(w *ecs.World) {}
 
 func (s *PersistSystem) Update(w *ecs.World) {
 	if ecs.GetResource[Tick](w).Tick%s.UpdateInterval == 0 {
-		ecs.GetResource[World](w).TryCompact()
+		w2 := ecs.GetResource[World](w)
+		if err := w2.TryCompact(); err != nil {
+			w2.wm.logger.Printf("Failed to compact world: %s", err.Error())
+		}
 	}
 }
 

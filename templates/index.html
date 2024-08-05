@@ -1,6 +1,5 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <title>Recs</title>
     <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
@@ -8,41 +7,24 @@
 
     <link rel="stylesheet" href="/static/css/style.css" type="text/css" media="screen" />
     <link rel="stylesheet" href="/static/fonts/font_awesome/all.min.css" type="text/css" />
-
-    <script src="/static/js/hyperscript.min.js"></script>
-    <script src="https://unpkg.com/htmx.org@2.0.1"
-        integrity="sha384-QWGpdj554B4ETpJJC9z+ZHJcA/i59TyjxEPXiiUgN2WmTyV5OEZWCD6gQhgkdpB/"
-        crossorigin="anonymous"></script>
-    <script src="https://unpkg.com/htmx-ext-sse@2.2.0/sse.js"></script>
-
-    <script type="importmap">
-        {
-            "imports": {
-                "three": "https://cdn.jsdelivr.net/npm/three@v0.166.1/build/three.module.js",
-                "lunchboxjs": "https://cdn.jsdelivr.net/npm/lunchboxjs/dist/lunchboxjs.js"
-            }
-        }
-    </script>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.80.1/phaser.min.js"></script>
+    
 </head>
-
 <body class='{{if .User.Config.lightTheme}}theme-light {{end}}{{block "body_class" .}}{{end}}'
     hx-headers='{"X-CSRFToken": "{{ .CsrfToken }}"}'>
-    <a id="skip-to-main" class="screenreader-text" href="#main-content">Skip to Content</a>
-    <a id="skip-to-nav" class="screenreader-text" href="#side-navigation">Skip to Navigation</a>
-    <main>
-        <div hx-ext="sse" sse-connect="/events?channel=world">
-            <div sse-swap="message" hx-swap="beforeend"></div>
+    <script type="importmap">
+        {
+          "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.167.1/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.167.1/examples/jsm/"
+          }
+        }
+      </script>
 
-            <three-lunchbox sse-swap="entity" hx-swap="beforeend">
-            </three-lunchbox>
-            
-        </div>
-    </main>
 
-    <script type="module">
-        import { initLunchbox } from 'lunchboxjs';
-        initLunchbox();
-    </script>
+    <div id="game"></div>
+    <script type="module" src="/static/js/main.js"></script>
 </body>
 
 </html>
