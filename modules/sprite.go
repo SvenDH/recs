@@ -6,6 +6,6 @@ import (
 
 type Sprite string
 
-func RegisterSprite(s *cluster.Server) {
+func RegisterSprite(s *cluster.Store) {
 	cluster.RegisterComponent[Sprite](s, true, true, true)
 }

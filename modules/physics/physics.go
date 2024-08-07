@@ -55,7 +55,7 @@ func (s *PhysicsSystem) Update(w *ecs.World) {
 
 func (s *PhysicsSystem) Finalize(w *ecs.World) {}
 
-func RegisterPhysics(s *cluster.Server) {
+func RegisterPhysics(s *cluster.Store) {
 	cluster.RegisterComponent[Position](s, true, true, true)
 	cluster.RegisterComponent[Velocity](s, true, true, true)
 	cluster.RegisterComponent[Heading](s, true, true, true)

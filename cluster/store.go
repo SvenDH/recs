@@ -36,7 +36,7 @@ type conn struct {
 	mtx        sync.Mutex
 }
 
-type Server struct {
+type Store struct {
 	events.Broker
 	Bind        string
 	DialOptions []grpc.DialOption
@@ -58,7 +58,7 @@ type Server struct {
 	raft   *raft.Raft
 	logger *log.Logger
 }
-type fsm Server
+type fsm Store
 
 type command struct {
 	Op    string `json:"o,omitempty"`
@@ -70,13 +70,14 @@ type fsmSnapshot struct {
 	store map[string]string
 }
 
-func NewServer(dir string, inmem, wal bool) *Server {
-	s := &Server{
+func NewStore(dir string, inmem, wal bool) *Store {
+	s := &Store{
 		Broker:      events.NewMemoryBroker(),
 		DialOptions: []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
 		RpcTimeout:  10 * time.Second,
 		s2w:         make(map[string][]string),
 		w2s:         make(map[string]string),
+		dir:	     dir,
 		inmem:       inmem,
 		wal:         wal,
 		connections: make(map[raft.ServerID]*conn),
@@ -86,16 +87,16 @@ func NewServer(dir string, inmem, wal bool) *Server {
 	return s
 }
 
-func RegisterComponent[T any](s *Server, share, log, save bool) {
+func RegisterComponent[T any](s *Store, share, log, save bool) {
 	tp := reflect.TypeOf((*T)(nil)).Elem()
 	s.wm.AddComponent(tp, share, log, save)
 }
 
-func RegisterSystem(s *Server, systems ...world.System) {
+func RegisterSystem(s *Store, systems ...world.System) {
 	s.wm.Systems = append(s.wm.Systems, systems...)
 }
 
-func (s *Server) Open(enableSingle bool, localID string) error {
+func (s *Store) Open(enableSingle bool, localID string) error {
 	config := raft.DefaultConfig()
 	config.LocalID = raft.ServerID(localID)
 	
@@ -157,14 +158,14 @@ func (s *Server) Open(enableSingle bool, localID string) error {
 	return nil
 }
 
-func (s *Server) Close() {
+func (s *Store) Close() {
 	for _, c := range s.connections {
 		c.clientConn.Close()
 	}
 	s.Broker.Close()
 }
 
-func (s *Server) getPeer(id raft.ServerID, target raft.ServerAddress) (pb.RecsClient, error) {
+func (s *Store) getPeer(id raft.ServerID, target raft.ServerAddress) (pb.RecsClient, error) {
 	// Connection pool for rpc and publishing
 	s.connectionsMtx.Lock()
 	c, ok := s.connections[id]
@@ -189,7 +190,7 @@ func (s *Server) getPeer(id raft.ServerID, target raft.ServerAddress) (pb.RecsCl
 	return c.client, nil
 }
 
-func (s *Server) findServerWithLeastWorlds() string {
+func (s *Store) findServerWithLeastWorlds() string {
 	// Find server with least amount of assigned worlds
 	var min int
 	var server *raft.Server
@@ -205,7 +206,7 @@ func (s *Server) findServerWithLeastWorlds() string {
 	return string(server.ID)
 }
 
-func (s *Server) findServerWithWorld(world string) (pb.RecsClient, error) {
+func (s *Store) findServerWithWorld(world string) (pb.RecsClient, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	server, ok := s.w2s[world]
@@ -224,15 +225,15 @@ func (s *Server) findServerWithWorld(world string) (pb.RecsClient, error) {
 	return nil, fmt.Errorf("server owning world %s not found", world)
 }
 
-func (s *Server) Subscribe(ctx context.Context, topics ...string) *chan events.Messages {
+func (s *Store) Subscribe(ctx context.Context, topics ...string) *chan events.Messages {
 	return s.Broker.Subscribe(ctx, topics...)
 }
 
-func (s *Server) Unsubscribe(ctx context.Context, sub *chan events.Messages, topics ...string) {
+func (s *Store) Unsubscribe(ctx context.Context, sub *chan events.Messages, topics ...string) {
 	s.Broker.Unsubscribe(ctx, sub, topics...)
 }
 
-func (s *Server) Publish(ctx context.Context, topic string, message []events.Message) error {
+func (s *Store) Publish(ctx context.Context, topic string, message []events.Message) error {
 	m := make([]*pb.Message, len(message))
 	for i, msg := range message {
 		m[i] = &pb.Message{
@@ -274,7 +275,7 @@ func (s *Server) Publish(ctx context.Context, topic string, message []events.Mes
 	return nil
 }
 
-func (s *Server) CreateWorld(ctx context.Context, name string) error {
+func (s *Store) CreateWorld(ctx context.Context, name string) error {
 	if s.raft.State() != raft.Leader {
 		return fmt.Errorf("not leader")
 	}
@@ -289,7 +290,7 @@ func (s *Server) CreateWorld(ctx context.Context, name string) error {
 	return s.raft.Apply(b, raftTimeout).Error()
 }
 
-func (s *Server) DeleteWorld(ctx context.Context, name string) error {
+func (s *Store) DeleteWorld(ctx context.Context, name string) error {
 	if s.raft.State() != raft.Leader {
 		return fmt.Errorf("not leader")
 	}
@@ -300,7 +301,7 @@ func (s *Server) DeleteWorld(ctx context.Context, name string) error {
 	return s.raft.Apply(b, raftTimeout).Error()
 }
 
-func (s *Server) Create(ctx context.Context, world string, components map[string]interface{}) (uint64, error) {
+func (s *Store) Create(ctx context.Context, world string, components map[string]interface{}) (uint64, error) {
 	newComponents := map[string][]byte{}
 	for k, v := range components {
 		val, err := json.Marshal(v)
@@ -336,7 +337,7 @@ func (s *Server) Create(ctx context.Context, world string, components map[string
 	return resp.Id, nil
 }
 
-func (s *Server) Delete(ctx context.Context, world string, id uint64) error {
+func (s *Store) Delete(ctx context.Context, world string, id uint64) error {
 	c, err := s.findServerWithWorld(world)
 	if err != nil {
 		return err
@@ -345,7 +346,7 @@ func (s *Server) Delete(ctx context.Context, world string, id uint64) error {
 	return err
 }
 
-func (s *Server) Set(ctx context.Context, world string, id uint64, component string, value string) error {
+func (s *Store) Set(ctx context.Context, world string, id uint64, component string, value string) error {
 	c, err := s.findServerWithWorld(world)
 	if err != nil {
 		return err
@@ -363,7 +364,7 @@ func (s *Server) Set(ctx context.Context, world string, id uint64, component str
 	return err
 }
 
-func (s *Server) Remove(ctx context.Context, world string, id uint64, component string) error {
+func (s *Store) Remove(ctx context.Context, world string, id uint64, component string) error {
 	c, err := s.findServerWithWorld(world)
 	if err != nil {
 		return err
@@ -375,7 +376,7 @@ func (s *Server) Remove(ctx context.Context, world string, id uint64, component 
 	return err
 }
 
-func (s *Server) Move(ctx context.Context, from string, to string, copy bool, entities ...uint64) ([]uint64, error) {
+func (s *Store) Move(ctx context.Context, from string, to string, copy bool, entities ...uint64) ([]uint64, error) {
 	c, err := s.findServerWithWorld(from)
 	if err != nil {
 		return nil, err
@@ -388,7 +389,7 @@ func (s *Server) Move(ctx context.Context, from string, to string, copy bool, en
 	return resp.Entities, err
 }
 
-func (s *Server) Get(ctx context.Context, world string, id uint64, component string, yield func(uint64, uint64, []byte) bool) error {
+func (s *Store) Get(ctx context.Context, world string, id uint64, component string, yield func(uint64, uint64, []byte) bool) error {
 	c, err := s.findServerWithWorld(world)
 	if err != nil {
 		return err
@@ -427,6 +428,41 @@ func (s *Server) Get(ctx context.Context, world string, id uint64, component str
 	}
 }
 
+// Join joins a node, identified by nodeID and located at addr, to this store.
+// The node must be ready to respond to Raft communications at that address.
+func (s *Store) Join(nodeID, addr string) error {
+	s.logger.Printf("received join request for remote node %s at %s", nodeID, addr)
+
+	configFuture := s.raft.GetConfiguration()
+	if err := configFuture.Error(); err != nil {
+		s.logger.Printf("failed to get raft configuration: %v", err)
+		return err
+	}
+	for _, srv := range configFuture.Configuration().Servers {
+		// If a node already exists with either the joining node's ID or address,
+		// that node may need to be removed from the config first.
+		if srv.ID == raft.ServerID(nodeID) || srv.Address == raft.ServerAddress(addr) {
+			// However if *both* the ID and the address are the same, then nothing -- not even
+			// a join operation -- is needed.
+			if srv.Address == raft.ServerAddress(addr) && srv.ID == raft.ServerID(nodeID) {
+				s.logger.Printf("node %s at %s already member of cluster, ignoring join request", nodeID, addr)
+				return nil
+			}
+
+			future := s.raft.RemoveServer(srv.ID, 0, 0)
+			if err := future.Error(); err != nil {
+				return fmt.Errorf("error removing existing node %s at %s: %s", nodeID, addr, err)
+			}
+		}
+	}
+	f := s.raft.AddVoter(raft.ServerID(nodeID), raft.ServerAddress(addr), 0, 0)
+	if f.Error() != nil {
+		return f.Error()
+	}
+	s.logger.Printf("node %s at %s joined successfully", nodeID, addr)
+	return nil
+}
+
 func (f *fsm) Apply(l *raft.Log) interface{} {
 	var c command
 	if err := json.Unmarshal(l.Data, &c); err != nil {
@@ -462,41 +498,6 @@ func (f *fsm) Restore(rc io.ReadCloser) error {
 	for k, v := range o {
 		f.s2w[v] = append(f.s2w[v], k)
 	}
-	return nil
-}
-
-// Join joins a node, identified by nodeID and located at addr, to this store.
-// The node must be ready to respond to Raft communications at that address.
-func (s *Server) Join(nodeID, addr string) error {
-	s.logger.Printf("received join request for remote node %s at %s", nodeID, addr)
-
-	configFuture := s.raft.GetConfiguration()
-	if err := configFuture.Error(); err != nil {
-		s.logger.Printf("failed to get raft configuration: %v", err)
-		return err
-	}
-	for _, srv := range configFuture.Configuration().Servers {
-		// If a node already exists with either the joining node's ID or address,
-		// that node may need to be removed from the config first.
-		if srv.ID == raft.ServerID(nodeID) || srv.Address == raft.ServerAddress(addr) {
-			// However if *both* the ID and the address are the same, then nothing -- not even
-			// a join operation -- is needed.
-			if srv.Address == raft.ServerAddress(addr) && srv.ID == raft.ServerID(nodeID) {
-				s.logger.Printf("node %s at %s already member of cluster, ignoring join request", nodeID, addr)
-				return nil
-			}
-
-			future := s.raft.RemoveServer(srv.ID, 0, 0)
-			if err := future.Error(); err != nil {
-				return fmt.Errorf("error removing existing node %s at %s: %s", nodeID, addr, err)
-			}
-		}
-	}
-	f := s.raft.AddVoter(raft.ServerID(nodeID), raft.ServerAddress(addr), 0, 0)
-	if f.Error() != nil {
-		return f.Error()
-	}
-	s.logger.Printf("node %s at %s joined successfully", nodeID, addr)
 	return nil
 }
 

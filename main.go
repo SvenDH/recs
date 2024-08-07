@@ -38,12 +38,7 @@ func main() {
 		log.Fatalln("No Raft storage directory specified")
 	}
 
-	s := cluster.NewServer(raftDir, *inmem, *wal)
-
-	modules.RegisterBase(s)
-	modules.RegisterChat(s)
-	modules.RegisterSprite(s)
-	physics.RegisterPhysics(s)
+	s := cluster.NewStore(raftDir, *inmem, *wal)
 	
 	s.Bind = *raftAddr
 	if err := s.Open(*joinAddr == "", *nodeID); err != nil {
@@ -62,6 +57,12 @@ func main() {
 	}
 
 	log.Printf("hraftd started successfully, listening on http://%s", *httpAddr)
+
+	modules.RegisterBase(s)
+	modules.RegisterChat(s)
+	modules.RegisterSprite(s)
+	modules.RegisterTiles(s)
+	physics.RegisterPhysics(s)
 
 	terminate := make(chan os.Signal, 1)
 	signal.Notify(terminate, os.Interrupt)

@@ -7,7 +7,7 @@ import (
 type Name string
 type Owner string
 
-func RegisterBase(s *cluster.Server) {
+func RegisterBase(s *cluster.Store) {
 	cluster.RegisterComponent[Name](s, true, true, true)
 	cluster.RegisterComponent[Owner](s, true, true, true)
 }

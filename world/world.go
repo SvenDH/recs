@@ -16,12 +16,12 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/SvenDH/recs/events"
 	archeserde "github.com/mlange-42/arche-serde"
 	"github.com/mlange-42/arche/ecs"
 	"github.com/mlange-42/arche/ecs/event"
 	"github.com/mlange-42/arche/generic"
 	"github.com/mlange-42/arche/listener"
+	"github.com/SvenDH/recs/events"
 )
 
 type Store interface {
@@ -40,18 +40,17 @@ type ComponentInfo struct {
 	Name  string
 	Share bool
 	Log   bool
-	Save  bool
-	// TODO: Implement save filtering
+	Save  bool // TODO: Implement save filtering
 }
 
 type WorldManager struct {
-	worlds     map[string]*World
 	Components map[string]ComponentInfo
 	Systems    []System
 	TPS        float64
 	Steps      int64
 	Wal        bool
 
+	worlds     map[string]*World
 	mu          sync.RWMutex
 	listener    listener.Dispatch
 	store       Store
@@ -317,6 +316,9 @@ func (wm *WorldManager) AddComponent(t reflect.Type, share, log, save bool) {
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 	n := getName(t)
+	if _, ok := wm.Components[n]; ok {
+		wm.logger.Panicf("component with first 3 letters %s already exists", n)
+	}
 	wm.Components[n] = ComponentInfo{
 		Type:  t,
 		Name:  n,
@@ -514,6 +516,10 @@ func (w *World) checkComponents(components string) (map[string]ecs.ID, error) {
 	return comps, nil
 }
 
+func (w *World) Ping() {
+	w.step = 0
+}
+
 func (w *World) addToLog(l events.Message) {
 	w.CommitIndex += 1
 	l.Idx = w.CommitIndex
@@ -528,9 +534,6 @@ func (w *World) addToLog(l events.Message) {
 	w.changed = true
 }
 
-func (w *World) Ping() {
-	w.step = 0
-}
 
 func (w *World) setPublish(e uint64, n string, d interface{}) {
 	w.addToLog(events.Message{Op: events.Set, Entity: e, Key: n, Value: d})

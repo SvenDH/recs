@@ -66,18 +66,17 @@ func (b *MemoryBroker) Unsubscribe(ctx context.Context, sub *chan Messages, chan
 
 func (b *MemoryBroker) Publish(ctx context.Context, channel string, messages []Message) error {
 	b.mutex.Lock()
-	defer b.mutex.Unlock()
-	
 	if subscribers, found := b.subscribers[channel]; found {
 		for _, sub := range subscribers {
 			select {
 			case sub.Channel <- Messages{Channel: channel, Messages: messages}:
 			case <-time.After(time.Second):
 				fmt.Printf("Subscriber slow. Unsubscribing from channel: %s\n", channel)
-				b.Unsubscribe(ctx, &sub.Channel, channel)
+				defer b.Unsubscribe(ctx, &sub.Channel, channel)
 			}
 		}
 	}
+	defer b.mutex.Unlock()
 	return nil
 }
 

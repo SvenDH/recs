@@ -12,7 +12,7 @@ type Chat struct {
 	users []string
 }
 
-func RegisterChat(s *cluster.Server) {
+func RegisterChat(s *cluster.Store) {
 	cluster.RegisterComponent[Message](s, true, true, true)
 	cluster.RegisterComponent[Chat](s, true, true, true)
 	//cluster.RegisterSystem(s, &Chat{})
